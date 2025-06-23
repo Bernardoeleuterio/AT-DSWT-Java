@@ -1,4 +1,5 @@
 package org.example;
+
 import io.javalin.Javalin;
 import io.javalin.http.HttpStatus;
 import org.junit.jupiter.api.*;
@@ -8,14 +9,15 @@ import java.io.BufferedReader;
 import java.io.InputStreamReader;
 import java.io.OutputStream;
 import java.net.HttpURLConnection;
+import java.net.URI;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-
 
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 @TestMethodOrder(MethodOrderer.OrderAnnotation.class)
@@ -46,39 +48,41 @@ public class AplicacaoPrincipalTest {
             ctx.json(Map.of("mensagem", "Olá, " + nome + "!"));
         });
 
-        app.post("/usuarios", ctx -> {
-            Usuario novoUsuario = ctx.bodyAsClass(Usuario.class);
+        app.post("/tarefas", ctx -> {
+            Tarefa novaTarefa = ctx.bodyAsClass(Tarefa.class);
 
-            if (AplicacaoPrincipal.usuarios.containsKey(novoUsuario.getEmail())) {
-                ctx.status(HttpStatus.CONFLICT);
-                ctx.json(Map.of("erro", "Email já cadastrado!"));
-                return;
-            }
-            if (novoUsuario.getNome() == null || novoUsuario.getNome().isEmpty() ||
-                    novoUsuario.getEmail() == null || novoUsuario.getEmail().isEmpty() ||
-                    novoUsuario.getIdade() <= 0) {
+            if (novaTarefa.getTitulo() == null || novaTarefa.getTitulo().trim().isEmpty()) {
                 ctx.status(HttpStatus.BAD_REQUEST);
-                ctx.json(Map.of("erro", "Nome, email e idade são obrigatórios e idade deve ser positiva."));
+                ctx.json(Map.of("erro", "O título da tarefa é obrigatório."));
                 return;
             }
 
-            AplicacaoPrincipal.usuarios.put(novoUsuario.getEmail(), novoUsuario);
+            AplicacaoPrincipal.tarefas.put(novaTarefa.getId(), novaTarefa);
             ctx.status(HttpStatus.CREATED);
-            ctx.json(novoUsuario);
+            ctx.json(novaTarefa);
         });
 
-        app.get("/usuarios", ctx -> {
-            ctx.json(new ArrayList<>(AplicacaoPrincipal.usuarios.values()));
+        app.get("/tarefas", ctx -> {
+            ctx.json(new ArrayList<>(AplicacaoPrincipal.tarefas.values()));
         });
 
-        app.get("/usuarios/{email}", ctx -> {
-            String emailBusca = ctx.pathParam("email");
-            Usuario usuarioEncontrado = AplicacaoPrincipal.usuarios.get(emailBusca);
-            if (usuarioEncontrado != null) {
-                ctx.json(usuarioEncontrado);
+        app.get("/tarefas/{id}", ctx -> {
+            String idBusca = ctx.pathParam("id");
+            Tarefa tarefaEncontrada = null;
+            try {
+                UUID uuidIdBusca = UUID.fromString(idBusca);
+                tarefaEncontrada = AplicacaoPrincipal.tarefas.get(uuidIdBusca);
+            } catch (IllegalArgumentException e) {
+                ctx.status(HttpStatus.BAD_REQUEST);
+                ctx.json(Map.of("erro", "O ID fornecido não é um formato UUID válido."));
+                return;
+            }
+
+            if (tarefaEncontrada != null) {
+                ctx.json(tarefaEncontrada);
             } else {
                 ctx.status(HttpStatus.NOT_FOUND);
-                ctx.json(Map.of("erro", "Usuário não encontrado com o email: " + emailBusca));
+                ctx.json(Map.of("erro", "Tarefa não encontrada com o ID: " + idBusca));
             }
         });
 
@@ -88,12 +92,13 @@ public class AplicacaoPrincipalTest {
     @AfterAll
     void tearDown() {
         app.stop();
-        AplicacaoPrincipal.usuarios.clear();
+        AplicacaoPrincipal.tarefas.clear();
         System.out.println("Servidor Javalin de TESTE parado.");
     }
 
+
     private TestResponse enviaRequisicao(String metodo, String path, String body) throws Exception {
-        URL url = new URL("http://localhost:7001" + path);
+        URL url = new URI("http://localhost:7001" + path).toURL();
         HttpURLConnection connection = (HttpURLConnection) url.openConnection();
         connection.setRequestMethod(metodo);
         connection.setDoOutput(metodo.equals("POST") || metodo.equals("PUT"));
@@ -173,60 +178,85 @@ public class AplicacaoPrincipalTest {
         assertEquals("Olá, Testador!", jsonResponse.get("mensagem"));
     }
 
+    private static String taskIdParaBusca = null;
+
     @Test
     @Order(5)
-    @DisplayName("Teste POST /usuarios: cria um novo usuário e verifica status 201")
-    void testeCriaUsuarioEndpoint() throws Exception {
-        String jsonUsuario = "{\"nome\":\"Usuario Teste\",\"email\":\"teste.usuario@teste.com\",\"idade\":25}";
-        TestResponse resposta = enviaRequisicao("POST", "/usuarios", jsonUsuario);
+    @DisplayName("Teste POST /tarefas: cria uma nova tarefa e verifica status 201")
+    void testeCriaTarefaEndpoint() throws Exception {
+        String jsonTarefa = "{\"titulo\":\"Comprar Leite\",\"descricao\":\"No supermercado\"}";
+        TestResponse resposta = enviaRequisicao("POST", "/tarefas", jsonTarefa);
         assertEquals(201, resposta.status);
-        Map<String, Object> usuarioCriado = objectMapper.readValue(resposta.body, Map.class);
-        assertEquals("teste.usuario@teste.com", usuarioCriado.get("email"));
+
+        Map<String, Object> tarefaCriada = objectMapper.readValue(resposta.body, Map.class);
+        assertNotNull(tarefaCriada.get("id"));
+        assertEquals("Comprar Leite", tarefaCriada.get("titulo"));
+        assertEquals(false, tarefaCriada.get("concluida"));
+
+        taskIdParaBusca = (String) tarefaCriada.get("id");
+        System.out.println("Tarefa de teste criada com ID: " + taskIdParaBusca);
     }
 
     @Test
     @Order(6)
-    @DisplayName("Teste POST /usuarios: tenta criar usuário com email duplicado, espera 409")
-    void testeCriaUsuarioEmailDuplicadoEndpoint() throws Exception {
-        String jsonUsuarioDuplicado = "{\"nome\":\"Usuario Teste Duplicado\",\"email\":\"teste.usuario@teste.com\",\"idade\":30}";
-        TestResponse resposta = enviaRequisicao("POST", "/usuarios", jsonUsuarioDuplicado);
-        assertEquals(409, resposta.status);
+    @DisplayName("Teste POST /tarefas: tenta criar tarefa sem título, espera 400")
+    void testeCriaTarefaSemTituloEndpoint() throws Exception {
+        String jsonTarefaInvalida = "{\"titulo\":\"   \",\"descricao\":\"Esta tarefa não deveria ser criada\"}";
+        TestResponse resposta = enviaRequisicao("POST", "/tarefas", jsonTarefaInvalida);
+        assertEquals(400, resposta.status);
         Map<String, String> erroResponse = objectMapper.readValue(resposta.body, Map.class);
-        assertEquals("Email já cadastrado!", erroResponse.get("erro"));
+        assertEquals("O título da tarefa é obrigatório.", erroResponse.get("erro"));
     }
+
 
     @Test
     @Order(7)
-    @DisplayName("Teste GET /usuarios: verifica listagem de usuários (não vazio)")
-    void testeListaUsuariosEndpoint() throws Exception {
-        TestResponse resposta = enviaRequisicao("GET", "/usuarios", null);
+    @DisplayName("Teste GET /tarefas: verifica listagem de tarefas (não vazia)")
+    void testeListaTarefasEndpoint() throws Exception {
+        if (taskIdParaBusca == null) {
+            testeCriaTarefaEndpoint();
+        }
+
+        TestResponse resposta = enviaRequisicao("GET", "/tarefas", null);
         assertEquals(200, resposta.status);
-        List<Map<String, Object>> usuariosListados = objectMapper.readValue(resposta.body, List.class);
-        assertFalse(usuariosListados.isEmpty());
-        assertTrue(usuariosListados.stream().anyMatch(u -> "teste.usuario@teste.com".equals(u.get("email"))));
+        List<Map<String, Object>> tarefasListadas = objectMapper.readValue(resposta.body, List.class);
+        assertFalse(tarefasListadas.isEmpty());
+
+        assertTrue(tarefasListadas.stream().anyMatch(t -> taskIdParaBusca.equals(t.get("id"))));
     }
 
     @Test
     @Order(8)
-    @DisplayName("Teste GET /usuarios/{email}: busca usuário existente e verifica dados")
-    void testeBuscaUsuarioExistenteEndpoint() throws Exception {
-        String emailBusca = "teste.usuario@teste.com";
-        TestResponse resposta = enviaRequisicao("GET", "/usuarios/" + emailBusca, null);
+    @DisplayName("Teste GET /tarefas/{id}: busca tarefa existente e verifica dados")
+    void testeBuscaTarefaExistenteEndpoint() throws Exception {
+        assertNotNull(taskIdParaBusca, "ID da tarefa não deveria ser nulo para este teste.");
+
+        TestResponse resposta = enviaRequisicao("GET", "/tarefas/" + taskIdParaBusca, null);
         assertEquals(200, resposta.status);
-        Map<String, Object> usuarioEncontrado = objectMapper.readValue(resposta.body, Map.class);
-        assertEquals("Usuario Teste", usuarioEncontrado.get("nome"));
-        assertEquals(emailBusca, usuarioEncontrado.get("email"));
-        assertEquals(25, usuarioEncontrado.get("idade"));
+        Map<String, Object> tarefaEncontrada = objectMapper.readValue(resposta.body, Map.class);
+        assertEquals(taskIdParaBusca, tarefaEncontrada.get("id"));
+        assertEquals("Comprar Leite", tarefaEncontrada.get("titulo"));
     }
 
     @Test
     @Order(9)
-    @DisplayName("Teste GET /usuarios/{email}: busca usuário inexistente e verifica status 404")
-    void testeBuscaUsuarioInexistenteEndpoint() throws Exception {
-        String emailBusca = "naoexiste@teste.com";
-        TestResponse resposta = enviaRequisicao("GET", "/usuarios/" + emailBusca, null);
+    @DisplayName("Teste GET /tarefas/{id}: busca tarefa inexistente e verifica status 404")
+    void testeBuscaTarefaInexistenteEndpoint() throws Exception {
+        String idInexistente = "11111111-2222-3333-4444-555555555555";
+        TestResponse resposta = enviaRequisicao("GET", "/tarefas/" + idInexistente, null);
         assertEquals(404, resposta.status);
         Map<String, String> erroResponse = objectMapper.readValue(resposta.body, Map.class);
-        assertEquals("Usuário não encontrado com o email: " + emailBusca, erroResponse.get("erro"));
+        assertEquals("Tarefa não encontrada com o ID: " + idInexistente, erroResponse.get("erro"));
+    }
+
+    @Test
+    @Order(10)
+    @DisplayName("Teste GET /tarefas/{id}: busca com ID inválido e verifica status 400")
+    void testeBuscaTarefaIdInvalidoEndpoint() throws Exception {
+        String idInvalido = "NAO-EH-UM-UUID-VALIDO";
+        TestResponse resposta = enviaRequisicao("GET", "/tarefas/" + idInvalido, null);
+        assertEquals(400, resposta.status);
+        Map<String, String> erroResponse = objectMapper.readValue(resposta.body, Map.class);
+        assertEquals("O ID fornecido não é um formato UUID válido.", erroResponse.get("erro"));
     }
 }
